@@ -1,10 +1,19 @@
 //! Settings in `%APPDATA%\BigPictureAudio\config.ini` plus a small log.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 
-use windows::Win32::System::SystemInformation::GetLocalTime;
+/// A device chosen by the user.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DeviceRef {
+    pub id: String,
+    /// Friendly name at the time it was chosen.
+    pub name: String,
+    /// Whether no other active device had the same name when it was chosen.
+    /// Only then may the name be used to find the device again if its ID
+    /// changes (e.g. after a driver update).
+    pub name_unique: bool,
+}
 
 /// What to do with the default output device when Big Picture is closed.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -15,21 +24,42 @@ pub enum Leave {
     /// Switch back to the device that was the default before Big Picture.
     Previous,
     /// Switch to a specific device.
-    Device(String),
+    Device(DeviceRef),
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Config {
     /// Device to switch to while in Big Picture mode.
-    pub target: Option<String>,
+    pub target: Option<DeviceRef>,
     pub leave: Leave,
+    /// Skip the leave action if the user changed the default device manually
+    /// during the session.
+    pub skip_leave_if_manual: bool,
     /// UI language code (see `i18n`); `None` follows the Windows display language.
     pub language: Option<String>,
     /// `true` while a Big Picture session is in progress. Persisted together
-    /// with `previous` so the leave action still runs after a crash or reboot.
+    /// with `previous` and `expected` so the leave action still runs correctly
+    /// after a crash or reboot.
     pub session: bool,
     /// Default device at the moment Big Picture started.
     pub previous: Option<String>,
+    /// Default device as last set or seen by the app during the session; if the
+    /// actual default differs, the user changed it manually.
+    pub expected: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            target: None,
+            leave: Leave::Stay,
+            skip_leave_if_manual: true,
+            language: None,
+            session: false,
+            previous: None,
+            expected: None,
+        }
+    }
 }
 
 pub fn dir() -> PathBuf {
@@ -58,34 +88,60 @@ impl Config {
             .filter(|(_, value)| !value.is_empty())
             .collect();
         let get = |key: &str| values.get(key).cloned();
+        let device = |key: &str| {
+            get(key).map(|id| DeviceRef {
+                id,
+                name: get(&format!("{key}_name")).unwrap_or_default(),
+                name_unique: get(&format!("{key}_unique")).as_deref() == Some("1"),
+            })
+        };
 
         let leave = match get("leave").as_deref() {
             Some("previous") => Leave::Previous,
-            Some("device") => get("leave_device").map(Leave::Device).unwrap_or_default(),
+            Some("device") => device("leave_device").map(Leave::Device).unwrap_or_default(),
             _ => Leave::Stay,
         };
         Config {
-            target: get("target"),
+            target: device("target"),
             leave,
+            skip_leave_if_manual: get("skip_leave_if_manual").as_deref() != Some("0"),
             language: get("language").filter(|v| v != "auto"),
             session: get("session").as_deref() == Some("1"),
             previous: get("previous"),
+            expected: get("expected"),
         }
     }
 
     fn serialize(&self) -> String {
+        fn device(out: &mut String, key: &str, device: Option<&DeviceRef>) {
+            let empty = DeviceRef::default();
+            let d = device.unwrap_or(&empty);
+            let unique = if d.name_unique { "1" } else { "0" };
+            out.push_str(&format!(
+                "{key}={}\n{key}_name={}\n{key}_unique={unique}\n",
+                d.id, d.name
+            ));
+        }
+        let flag = |b: bool| if b { "1" } else { "0" };
+
+        let mut out = String::new();
+        device(&mut out, "target", self.target.as_ref());
         let (leave, leave_device) = match &self.leave {
-            Leave::Stay => ("stay", ""),
-            Leave::Previous => ("previous", ""),
-            Leave::Device(id) => ("device", id.as_str()),
+            Leave::Stay => ("stay", None),
+            Leave::Previous => ("previous", None),
+            Leave::Device(d) => ("device", Some(d)),
         };
-        format!(
-            "target={}\nleave={leave}\nleave_device={leave_device}\nlanguage={}\nsession={}\nprevious={}\n",
-            self.target.as_deref().unwrap_or(""),
+        out.push_str(&format!("leave={leave}\n"));
+        device(&mut out, "leave_device", leave_device);
+        out.push_str(&format!(
+            "skip_leave_if_manual={}\nlanguage={}\nsession={}\nprevious={}\nexpected={}\n",
+            flag(self.skip_leave_if_manual),
             self.language.as_deref().unwrap_or("auto"),
-            if self.session { "1" } else { "0" },
+            flag(self.session),
             self.previous.as_deref().unwrap_or(""),
-        )
+            self.expected.as_deref().unwrap_or(""),
+        ));
+        out
     }
 
     pub fn save(&self) {
@@ -96,7 +152,16 @@ impl Config {
     }
 }
 
+/// Appends a line to `log.txt`. Does nothing in tests, so they don't write
+/// to the real log.
+#[cfg(test)]
+pub fn log(_message: &str) {}
+
+#[cfg(not(test))]
 pub fn log(message: &str) {
+    use std::io::Write;
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+
     let t = unsafe { GetLocalTime() };
     let line = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}  {message}\n",
@@ -121,14 +186,24 @@ pub fn log(message: &str) {
 mod tests {
     use super::*;
 
+    fn device(id: &str, unique: bool) -> DeviceRef {
+        DeviceRef {
+            id: id.into(),
+            name: format!("Name {id}"),
+            name_unique: unique,
+        }
+    }
+
     #[test]
     fn round_trips() {
         let config = Config {
-            target: Some("{a}".into()),
-            leave: Leave::Device("{b}".into()),
+            target: Some(device("{a}", true)),
+            leave: Leave::Device(device("{b}", false)),
+            skip_leave_if_manual: false,
             language: Some("de".into()),
             session: true,
             previous: Some("{c}".into()),
+            expected: Some("{d}".into()),
         };
         assert_eq!(Config::parse(&config.serialize()), config);
         let config = Config {
@@ -139,10 +214,17 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_not_switching_back() {
-        // Configs from older versions have no `leave` key.
+    fn reads_configs_from_older_versions() {
         let config = Config::parse("target={a}\nrestore=\n");
         assert_eq!(config.leave, Leave::Stay);
-        assert_eq!(config.target.as_deref(), Some("{a}"));
+        assert!(config.skip_leave_if_manual);
+        // Name is filled in at startup.
+        assert_eq!(
+            config.target,
+            Some(DeviceRef {
+                id: "{a}".into(),
+                ..Default::default()
+            })
+        );
     }
 }

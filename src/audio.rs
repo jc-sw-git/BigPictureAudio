@@ -12,7 +12,8 @@ use std::ffi::c_void;
 use windows::core::{interface, IUnknown, IUnknown_Vtbl, GUID, HRESULT, PCWSTR, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::{
-    eConsole, eMultimedia, eRender, ERole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    eConsole, eMultimedia, eRender, ERole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE,
+    DEVICE_STATE_ACTIVE, DEVICE_STATE_NOTPRESENT,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
 
@@ -39,7 +40,10 @@ const CLSID_POLICY_CONFIG_CLIENT: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af
 #[derive(Clone, Debug)]
 pub struct Device {
     pub id: String,
+    /// Friendly name as reported by Windows.
     pub name: String,
+    /// Name for the UI: devices sharing a name are numbered ("Name - 1").
+    pub label: String,
 }
 
 fn enumerator() -> windows::core::Result<IMMDeviceEnumerator> {
@@ -72,12 +76,32 @@ pub fn outputs() -> windows::core::Result<Vec<Device>> {
         let mut devices = Vec::new();
         for i in 0..collection.GetCount()? {
             let device = collection.Item(i)?;
+            let name = device_name(&device);
             devices.push(Device {
                 id: device_id(&device)?,
-                name: device_name(&device),
+                label: name.clone(),
+                name,
             });
         }
+        number_duplicates(&mut devices);
         Ok(devices)
+    }
+}
+
+/// Appends " - 1", " - 2", ... to devices that share a name, ordered by ID so
+/// the numbers stay the same across runs.
+fn number_duplicates(devices: &mut [Device]) {
+    for i in 0..devices.len() {
+        let mut ids: Vec<&str> = devices
+            .iter()
+            .filter(|d| d.name == devices[i].name)
+            .map(|d| d.id.as_str())
+            .collect();
+        if ids.len() > 1 {
+            ids.sort_unstable();
+            let number = ids.iter().position(|id| *id == devices[i].id).unwrap_or(0) + 1;
+            devices[i].label = format!("{} - {number}", devices[i].name);
+        }
     }
 }
 
@@ -86,12 +110,20 @@ fn device_by_id(id: &str) -> windows::core::Result<IMMDevice> {
     unsafe { enumerator()?.GetDevice(PCWSTR(wide.as_ptr())) }
 }
 
+fn state(id: &str) -> Option<DEVICE_STATE> {
+    device_by_id(id).and_then(|device| unsafe { device.GetState() }).ok()
+}
+
 /// `true` if the device exists and is currently active (connected and enabled).
 pub fn is_available(id: &str) -> bool {
-    device_by_id(id)
-        .and_then(|device| unsafe { device.GetState() })
-        .map(|state| state == DEVICE_STATE_ACTIVE)
-        .unwrap_or(false)
+    state(id) == Some(DEVICE_STATE_ACTIVE)
+}
+
+/// `true` if Windows no longer knows the device under this ID, as happens
+/// when a driver update re-creates the endpoint. Unplugged or disabled
+/// devices don't count.
+pub fn is_gone(id: &str) -> bool {
+    matches!(state(id), None | Some(DEVICE_STATE_NOTPRESENT))
 }
 
 /// Friendly name of a device, also for devices that are currently unplugged
@@ -120,4 +152,25 @@ pub fn set_default_output(id: &str) -> windows::core::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(id: &str, name: &str) -> Device {
+        Device {
+            id: id.into(),
+            name: name.into(),
+            label: name.into(),
+        }
+    }
+
+    #[test]
+    fn numbers_devices_sharing_a_name_by_id() {
+        let mut devices = vec![device("{b}", "Monitor"), device("{x}", "TV"), device("{a}", "Monitor")];
+        number_duplicates(&mut devices);
+        let labels: Vec<&str> = devices.iter().map(|d| d.label.as_str()).collect();
+        assert_eq!(labels, ["Monitor - 2", "TV", "Monitor - 1"]);
+    }
 }

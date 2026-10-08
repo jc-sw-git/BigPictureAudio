@@ -47,20 +47,44 @@ pub fn steam_path() -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf16_lossy(&buf[..len])))
 }
 
+fn localization_files() -> Vec<std::fs::DirEntry> {
+    let Some(dir) = steam_path().map(|p| p.join("steamui").join("localization")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("steamui_") && name.ends_with("-json.js")
+        })
+        .collect();
+    files.sort_by_key(|entry| entry.file_name());
+    files
+}
+
+/// Name, size and modification time of every localization file. Comparing two
+/// stamps tells whether the files changed (e.g. through a Steam update) without
+/// reading them, which matters because together they are about 40 MB.
+pub type Stamp = Vec<(std::ffi::OsString, u64, Option<std::time::SystemTime>)>;
+
+pub fn localization_stamp() -> Stamp {
+    localization_files()
+        .into_iter()
+        .map(|entry| {
+            let meta = entry.metadata().ok();
+            let size = meta.as_ref().map_or(0, |m| m.len());
+            (entry.file_name(), size, meta.and_then(|m| m.modified().ok()))
+        })
+        .collect()
+}
+
 /// Collects the Big Picture window titles of all Steam languages.
 pub fn load_titles() -> HashSet<String> {
     let mut titles: HashSet<String> = FALLBACK_TITLES.iter().map(|t| normalize(t)).collect();
-    let Some(dir) = steam_path().map(|p| p.join("steamui").join("localization")) else {
-        return titles;
-    };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return titles;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !(name.starts_with("steamui_") && name.ends_with("-json.js")) {
-            continue;
-        }
+    for entry in localization_files() {
         if let Ok(content) = std::fs::read_to_string(entry.path()) {
             if let Some(title) = extract_title(&content) {
                 titles.insert(normalize(&title));

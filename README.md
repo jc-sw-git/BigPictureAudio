@@ -33,7 +33,7 @@ Click the tray icon:
 | Menu entry | Description |
 |---|---|
 | **Output device in Big Picture** | Device to switch to when Big Picture starts. **Don't switch** disables switching. |
-| **When leaving Big Picture** | **Don't switch** (default) keeps the current device. **Previous device** switches back to the device that was active before Big Picture. You can also pick any specific device. |
+| **When leaving Big Picture** | **Don't switch** (default) keeps the current device. **Previous device** switches back to the device that was active before Big Picture. You can also pick any specific device. **Not if I switched manually** (on by default) skips this when you changed the device yourself during Big Picture. |
 | **Language** | UI language. **Automatic (Windows)** (default) follows the Windows display language. |
 | **Start with Windows** | Adds or removes an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. |
 | **Open log folder** | Opens `%APPDATA%\BigPictureAudio` (`config.ini`, `log.txt`). |
@@ -43,6 +43,15 @@ Click the tray icon:
 Big Picture starts (e.g. TV audio over HDMI only appears once the TV is on),
 the app keeps checking every second and switches as soon as the device shows
 up. A device chosen for leaving Big Picture is waited for up to 30 seconds.
+If a device's ID changes (which can happen after driver updates), it is found
+again by its name – but only if no other device had the same name when you
+chose it. Devices sharing a name are numbered in the menu.
+
+**Switching manually:** If you change the default device yourself while Big
+Picture is running (e.g. to a headset for voice chat), the app stops switching
+for the rest of that session – it won't switch to the Big Picture device once
+it becomes available, nor again if Big Picture restarts within a minute (e.g.
+after a Steam update).
 
 **Languages:** English, French, Spanish, Italian, German, Polish, Dutch,
 Danish, Swedish, Norwegian, Finnish, Portuguese and Turkish. Other Windows
