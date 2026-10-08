@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::c_void;
 
-use windows::core::{w, PCWSTR};
+use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -53,9 +53,10 @@ const ID_EXIT: usize = 907;
 /// Greyed-out entries for a selected device that isn't connected.
 const ID_TARGET_MISSING: usize = 908;
 const ID_LEAVE_MISSING: usize = 909;
-/// Status lines at the top of the menu (`ID_STATUS_BASE..+STATUS_LINES_MAX`).
-const ID_STATUS_BASE: usize = 950;
-const STATUS_LINES_MAX: usize = 3;
+/// Status lines at the top of the menu.
+const ID_STATUS_STATE: usize = 950;
+const ID_STATUS_WAITING: usize = 951;
+const ID_STATUS_LEAVE: usize = 952;
 const ID_TARGET_BASE: usize = 1000;
 const ID_LEAVE_BASE: usize = 2000;
 const ID_LANGUAGE_BASE: usize = 3000;
@@ -258,8 +259,8 @@ impl App {
                 return None;
             };
 
-            for (i, line) in self.status_lines().iter().enumerate() {
-                append(menu, MF_STRING | MF_GRAYED, ID_STATUS_BASE + i, line);
+            for (id, line) in self.status_lines() {
+                append(menu, MF_STRING | MF_GRAYED, id, &line);
             }
             append(menu, MF_SEPARATOR, 0, "");
 
@@ -332,19 +333,20 @@ impl App {
     }
 
     /// Greyed-out lines at the top of the menu describing the current state.
-    fn status_lines(&self) -> Vec<String> {
+    fn status_lines(&self) -> Vec<(usize, String)> {
         let t = self.texts;
         let s = &self.session;
-        let mut lines = vec![if s.active { t.state_active } else { t.state_inactive }.to_string()];
+        let state = if s.active { t.state_active } else { t.state_inactive };
+        let mut lines = vec![(ID_STATUS_STATE, state.to_string())];
         if s.waiting_for_target {
-            lines.push(t.waiting_for_device.into());
+            lines.push((ID_STATUS_WAITING, t.waiting_for_device.into()));
         }
         if let Some(preview) = s.leave_preview(&self.config, &System) {
             let mut line = t.labeled(t.on_leave, &label(&preview.device, t));
             if preview.because_manual {
                 line += &format!(" ({})", t.because_manual);
             }
-            lines.push(line);
+            lines.push((ID_STATUS_LEAVE, line));
         }
         lines
     }
@@ -352,14 +354,19 @@ impl App {
     /// Updates the status lines, check marks and the enabled state of the
     /// "manual" option in an open menu after a setting changed.
     fn refresh_menu(&self, menu: HMENU) {
-        unsafe {
-            for i in 0..STATUS_LINES_MAX {
-                let _ = DeleteMenu(menu, (ID_STATUS_BASE + i) as u32, MF_BYCOMMAND);
-            }
-            for (i, line) in self.status_lines().iter().enumerate() {
-                let wide: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
-                let flags = MF_BYPOSITION | MF_STRING | MF_GRAYED;
-                let _ = InsertMenuW(menu, i as u32, flags, ID_STATUS_BASE + i, PCWSTR(wide.as_ptr()));
+        // Only the text is updated: adding or removing items while the menu is
+        // open makes Windows close it. A line that appears or disappears
+        // shows up the next time the menu opens.
+        for (id, line) in self.status_lines() {
+            let mut wide: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+            let info = MENUITEMINFOW {
+                cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                fMask: MIIM_STRING,
+                dwTypeData: PWSTR(wide.as_mut_ptr()),
+                ..Default::default()
+            };
+            unsafe {
+                let _ = SetMenuItemInfoW(menu, id as u32, false, &info);
             }
         }
         let target = self.config.target.as_ref().map(|d| d.id.as_str());

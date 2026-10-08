@@ -1,6 +1,6 @@
 [package]
 name = "big-picture-audio"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Switches the default audio output device while Steam is in Big Picture mode"
 license = "MIT"
