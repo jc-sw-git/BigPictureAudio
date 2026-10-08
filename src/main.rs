@@ -53,6 +53,9 @@ const ID_EXIT: usize = 907;
 /// Greyed-out entries for a selected device that isn't connected.
 const ID_TARGET_MISSING: usize = 908;
 const ID_LEAVE_MISSING: usize = 909;
+/// Status lines at the top of the menu (`ID_STATUS_BASE..+STATUS_LINES_MAX`).
+const ID_STATUS_BASE: usize = 950;
+const STATUS_LINES_MAX: usize = 3;
 const ID_TARGET_BASE: usize = 1000;
 const ID_LEAVE_BASE: usize = 2000;
 const ID_LANGUAGE_BASE: usize = 3000;
@@ -258,20 +261,8 @@ impl App {
                 return None;
             };
 
-            append(
-                menu,
-                MF_STRING | MF_GRAYED,
-                0,
-                if self.session.active {
-                    t.state_active
-                } else {
-                    t.state_inactive
-                },
-            );
-            if self.session.user_override {
-                append(menu, MF_STRING | MF_GRAYED, 0, t.manual_override);
-            } else if self.session.waiting_for_target {
-                append(menu, MF_STRING | MF_GRAYED, 0, t.waiting_for_device);
+            for (i, line) in self.status_lines().iter().enumerate() {
+                append(menu, MF_STRING | MF_GRAYED, ID_STATUS_BASE + i, line);
             }
             append(menu, MF_SEPARATOR, 0, "");
 
@@ -343,9 +334,39 @@ impl App {
         }
     }
 
-    /// Updates check marks (and the enabled state of the "manual" option) in
-    /// an open menu after a setting changed.
+    /// Greyed-out lines at the top of the menu describing the current state.
+    fn status_lines(&self) -> Vec<String> {
+        let t = self.texts;
+        let s = &self.session;
+        let mut lines = vec![if s.active { t.state_active } else { t.state_inactive }.to_string()];
+        if s.user_override {
+            lines.push(t.manual_override.into());
+        } else if s.waiting_for_target {
+            lines.push(t.waiting_for_device.into());
+        }
+        if let Some(preview) = s.leave_preview(&self.config, &System) {
+            let mut line = t.labeled(t.on_leave, &label(&preview.device, t));
+            if preview.because_manual {
+                line += &format!(" ({})", t.because_manual);
+            }
+            lines.push(line);
+        }
+        lines
+    }
+
+    /// Updates the status lines, check marks and the enabled state of the
+    /// "manual" option in an open menu after a setting changed.
     fn refresh_menu(&self, menu: HMENU) {
+        unsafe {
+            for i in 0..STATUS_LINES_MAX {
+                let _ = DeleteMenu(menu, (ID_STATUS_BASE + i) as u32, MF_BYCOMMAND);
+            }
+            for (i, line) in self.status_lines().iter().enumerate() {
+                let wide: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+                let flags = MF_BYPOSITION | MF_STRING | MF_GRAYED;
+                let _ = InsertMenuW(menu, i as u32, flags, ID_STATUS_BASE + i, PCWSTR(wide.as_ptr()));
+            }
+        }
         let target = self.config.target.as_ref().map(|d| d.id.as_str());
         let leave_device = match &self.config.leave {
             Leave::Device(device) => Some(device.id.as_str()),

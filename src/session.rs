@@ -109,6 +109,14 @@ enum LeaveTarget {
     Configured,
 }
 
+/// See [`Session::leave_preview`].
+#[derive(Debug, PartialEq)]
+pub struct LeavePreview {
+    pub device: String,
+    /// The device stays because the user switched to it manually.
+    pub because_manual: bool,
+}
+
 #[derive(Default)]
 pub struct Session {
     pub active: bool,
@@ -288,6 +296,30 @@ impl Session {
             return;
         }
         self.leave_retries_left -= 1;
+    }
+
+    /// While Big Picture is running: the device that will be the default after
+    /// leaving it, given the current settings.
+    pub fn leave_preview(&self, config: &Config, audio: &impl Audio) -> Option<LeavePreview> {
+        if !self.active {
+            return None;
+        }
+        if self.user_override && config.skip_leave_if_manual {
+            let device = audio.default_output()?;
+            return Some(LeavePreview {
+                device,
+                because_manual: true,
+            });
+        }
+        let device = match &config.leave {
+            Leave::Stay => audio.default_output()?,
+            Leave::Previous => config.previous.clone()?,
+            Leave::Device(device) => device.id.clone(),
+        };
+        Some(LeavePreview {
+            device,
+            because_manual: false,
+        })
     }
 
     /// The user picked a new target device. If Big Picture is running, it's
@@ -649,6 +681,37 @@ mod tests {
         ticks(1, true, &mut s, &mut c, &mut a);
         assert!(s.waiting_for_target);
         assert_eq!(a.default.as_deref(), Some("speakers"));
+    }
+
+    #[test]
+    fn previews_device_after_leaving() {
+        let preview = |device: &str, because_manual| {
+            Some(LeavePreview {
+                device: device.into(),
+                because_manual,
+            })
+        };
+        let (mut s, mut c, mut a) = (
+            Session::default(),
+            config(Leave::Previous),
+            Fake::new(DEVICES, "speakers"),
+        );
+        assert_eq!(s.leave_preview(&c, &a), None);
+        ticks(1, true, &mut s, &mut c, &mut a);
+        assert_eq!(s.leave_preview(&c, &a), preview("speakers", false));
+        c.leave = Leave::Stay;
+        assert_eq!(s.leave_preview(&c, &a), preview("tv", false));
+        c.leave = Leave::Device(DeviceRef {
+            id: "headset".into(),
+            ..Default::default()
+        });
+        assert_eq!(s.leave_preview(&c, &a), preview("headset", false));
+
+        a.user_switches_to("speakers");
+        ticks(1, true, &mut s, &mut c, &mut a);
+        assert_eq!(s.leave_preview(&c, &a), preview("speakers", true));
+        c.skip_leave_if_manual = false;
+        assert_eq!(s.leave_preview(&c, &a), preview("headset", false));
     }
 
     #[test]
