@@ -12,7 +12,7 @@ already does for displays.
    It's a single self-contained executable, so there's no installer.
 2. Move it to a permanent location, e.g. `%LOCALAPPDATA%\Programs\BigPictureAudio\`.
 3. Run it. A tray icon appears in the notification area.
-4. Click the tray icon, pick your device under **Output device for Big Picture**
+4. Click the tray icon, pick your device under **Output device in Big Picture**
    and enable **Start with Windows**.
 
 **Start with Windows** stores the current path of the executable. If you move
