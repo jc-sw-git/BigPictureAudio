@@ -179,10 +179,7 @@ impl App {
             t.state_inactive
         };
         let mut tip = format!("Big Picture Audio\n{state}\n");
-        if self.session.user_override {
-            tip += t.manual_override;
-            tip += "\n";
-        } else if self.session.waiting_for_target {
+        if self.session.waiting_for_target {
             tip += t.waiting_for_device;
             tip += "\n";
         }
@@ -339,9 +336,7 @@ impl App {
         let t = self.texts;
         let s = &self.session;
         let mut lines = vec![if s.active { t.state_active } else { t.state_inactive }.to_string()];
-        if s.user_override {
-            lines.push(t.manual_override.into());
-        } else if s.waiting_for_target {
+        if s.waiting_for_target {
             lines.push(t.waiting_for_device.into());
         }
         if let Some(preview) = s.leave_preview(&self.config, &System) {
