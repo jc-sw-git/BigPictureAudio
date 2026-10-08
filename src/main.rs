@@ -609,3 +609,40 @@ mod system_tests {
         assert_eq!(audio::default_output().as_deref(), Some(current.as_str()));
     }
 }
+
+#[cfg(test)]
+mod diagnostics {
+    use super::*;
+
+    /// Logs default device, target state and Big Picture detection every 250 ms
+    /// for `BPA_MONITOR_SECS` seconds. Read-only:
+    /// `cargo test monitor -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn monitor() {
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+        let secs: u64 = std::env::var("BPA_MONITOR_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        let titles = steam::load_titles();
+        let target = config::Config::load().target.map(|d| d.id);
+        let start = std::time::Instant::now();
+        let mut last = String::new();
+        while start.elapsed().as_secs() < secs {
+            let default = audio::default_output().map(|id| name(&id)).unwrap_or_default();
+            let target_state = target.as_deref().is_some_and(audio::is_available);
+            let bpm = steam::big_picture_active(&titles);
+            let line = format!("bpm={bpm} target_active={target_state} default={default}");
+            if line != last {
+                let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+                println!(
+                    "{:02}:{:02}:{:02}.{:03}  {line}",
+                    t.wHour, t.wMinute, t.wSecond, t.wMilliseconds
+                );
+                last = line;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+}

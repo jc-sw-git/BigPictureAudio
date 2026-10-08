@@ -11,9 +11,6 @@ const EXIT_DEBOUNCE_TICKS: u32 = 2;
 /// How long to wait for the device chosen for leaving Big Picture to show up
 /// (e.g. a Bluetooth headset that reconnects) before giving up.
 const LEAVE_RETRY_TICKS: u32 = 30;
-/// If Big Picture comes back within this time after the user had switched
-/// devices manually (e.g. Steam restarted), the manual choice still applies.
-const OVERRIDE_GRACE_TICKS: u32 = 60;
 
 pub trait Audio {
     fn outputs(&self) -> Vec<Device>;
@@ -123,9 +120,6 @@ pub struct Session {
     /// The config changed and should be saved.
     pub config_changed: bool,
     inactive_ticks: u32,
-    /// Remaining ticks during which a new session inherits a manual override
-    /// from the previous one, plus that session's previous device.
-    override_grace: Option<(u32, Option<String>)>,
     leave_target: Option<LeaveTarget>,
     leave_retries_left: u32,
 }
@@ -152,16 +146,8 @@ impl Session {
                 config::log("Big Picture closed");
                 self.end(config, audio);
             }
-        } else {
-            if self.leave_target.is_some() {
-                self.try_leave(config, audio);
-            }
-            if let Some((ticks, _)) = &mut self.override_grace {
-                *ticks = ticks.saturating_sub(1);
-                if *ticks == 0 {
-                    self.override_grace = None;
-                }
-            }
+        } else if self.leave_target.is_some() {
+            self.try_leave(config, audio);
         }
     }
 
@@ -187,17 +173,11 @@ impl Session {
             // changed it in the meantime.
             self.user_override = default_changed(config, audio);
         } else {
-            let current = audio.default_output();
-            let grace = self.override_grace.take();
-            self.user_override = grace.is_some();
+            // Every start of Big Picture is a new session.
+            self.user_override = false;
             config.session = true;
-            // After a short interruption (e.g. Steam restart), the device from
-            // before the original session is still the one to go back to.
-            config.previous = match grace {
-                Some((_, previous)) => previous,
-                None => current.clone(),
-            };
-            config.expected = current;
+            config.previous = audio.default_output();
+            config.expected = config.previous.clone();
             self.config_changed = true;
         }
         if self.user_override {
@@ -261,13 +241,10 @@ impl Session {
         config.session = false;
         self.config_changed = true;
 
-        if manual {
-            self.override_grace = Some((OVERRIDE_GRACE_TICKS, previous.clone()));
-            if config.skip_leave_if_manual {
-                config::log("Default device was changed manually – keeping it");
-                self.leave_target = None;
-                return;
-            }
+        if manual && config.skip_leave_if_manual {
+            config::log("Default device was changed manually – keeping it");
+            self.leave_target = None;
+            return;
         }
         self.leave_target = match &config.leave {
             Leave::Stay => None,
@@ -550,34 +527,18 @@ mod tests {
     }
 
     #[test]
-    fn manual_change_survives_a_short_restart_of_big_picture() {
-        let (mut s, mut c, mut a) = (
-            Session::default(),
-            config(Leave::Previous),
-            Fake::new(DEVICES, "speakers"),
-        );
-        ticks(1, true, &mut s, &mut c, &mut a);
-        a.user_switches_to("headset");
-        ticks(1, true, &mut s, &mut c, &mut a);
-        // Steam restarts: Big Picture is gone for 10 s, then comes back.
-        ticks(10, false, &mut s, &mut c, &mut a);
-        ticks(1, true, &mut s, &mut c, &mut a);
-        assert!(s.user_override);
-        assert_eq!(a.default.as_deref(), Some("headset"));
-        // The device from before the original session is still remembered.
-        assert_eq!(c.previous.as_deref(), Some("speakers"));
-    }
-
-    #[test]
-    fn manual_change_expires_for_a_later_session() {
+    fn every_start_of_big_picture_is_a_new_session() {
         let (mut s, mut c, mut a) = (Session::default(), config(Leave::Stay), Fake::new(DEVICES, "speakers"));
         ticks(1, true, &mut s, &mut c, &mut a);
         a.user_switches_to("headset");
         ticks(1, true, &mut s, &mut c, &mut a);
-        ticks(2 + OVERRIDE_GRACE_TICKS, false, &mut s, &mut c, &mut a);
+        assert!(s.user_override);
+        // Leaving and re-entering shortly after switches again.
+        ticks(2, false, &mut s, &mut c, &mut a);
         ticks(1, true, &mut s, &mut c, &mut a);
         assert!(!s.user_override);
         assert_eq!(a.default.as_deref(), Some("tv"));
+        assert_eq!(c.previous.as_deref(), Some("headset"));
     }
 
     #[test]

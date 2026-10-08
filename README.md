@@ -49,9 +49,8 @@ chose it. Devices sharing a name are numbered in the menu.
 
 **Switching manually:** If you change the default device yourself while Big
 Picture is running (e.g. to a headset for voice chat), the app stops switching
-for the rest of that session – it won't switch to the Big Picture device once
-it becomes available, nor again if Big Picture restarts within a minute (e.g.
-after a Steam update).
+for the rest of that session – e.g. it won't switch to the Big Picture device
+once it becomes available. Every start of Big Picture is a new session.
 
 **Languages:** English, French, Spanish, Italian, German, Polish, Dutch,
 Danish, Swedish, Norwegian, Finnish, Portuguese and Turkish. Other Windows
