@@ -265,14 +265,14 @@ impl App {
             append(menu, MF_SEPARATOR, 0, "");
 
             let target = self.config.target.as_ref().map(|d| d.id.as_str());
-            self.append_devices(enter, ID_TARGET_BASE, target);
-            append(enter, MF_SEPARATOR, 0, "");
             append(
                 enter,
                 MF_STRING | check(target.is_none()),
                 ID_TARGET_NONE,
                 t.dont_switch,
             );
+            append(enter, MF_SEPARATOR, 0, "");
+            self.append_devices(enter, ID_TARGET_BASE, target);
             append(menu, MF_POPUP, enter.0 as usize, t.enter_menu);
 
             let leave_device = match &self.config.leave {
@@ -281,8 +281,19 @@ impl App {
             };
             let stay = self.config.leave == Leave::Stay;
             append(leave, MF_STRING | check(stay), ID_LEAVE_STAY, t.dont_switch);
+            // During Big Picture that's the device from before it started;
+            // otherwise the current default, which it will be at the next start.
+            let previous_id = if self.session.active {
+                self.config.previous.clone()
+            } else {
+                audio::default_output()
+            };
+            let previous_text = match previous_id {
+                Some(id) => format!("{} ({})", t.previous_device, label(&id, t)),
+                None => t.previous_device.to_string(),
+            };
             let previous = self.config.leave == Leave::Previous;
-            append(leave, MF_STRING | check(previous), ID_LEAVE_PREVIOUS, t.previous_device);
+            append(leave, MF_STRING | check(previous), ID_LEAVE_PREVIOUS, &previous_text);
             append(leave, MF_SEPARATOR, 0, "");
             self.append_devices(leave, ID_LEAVE_BASE, leave_device);
             append(leave, MF_SEPARATOR, 0, "");

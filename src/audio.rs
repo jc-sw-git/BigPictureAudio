@@ -69,7 +69,7 @@ fn device_name(device: &IMMDevice) -> String {
     }
 }
 
-/// All active playback devices.
+/// All active playback devices, sorted alphabetically.
 pub fn outputs() -> windows::core::Result<Vec<Device>> {
     unsafe {
         let collection = enumerator()?.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
@@ -84,6 +84,7 @@ pub fn outputs() -> windows::core::Result<Vec<Device>> {
             });
         }
         number_duplicates(&mut devices);
+        devices.sort_by_cached_key(|d| d.label.to_lowercase());
         Ok(devices)
     }
 }
