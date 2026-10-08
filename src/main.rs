@@ -289,7 +289,7 @@ impl App {
                 audio::default_output()
             };
             let previous_text = match previous_id {
-                Some(id) => format!("{} ({})", t.previous_device, label(&id, t)),
+                Some(id) => t.labeled(t.previous_device, &label(&id, t)),
                 None => t.previous_device.to_string(),
             };
             let previous = self.config.leave == Leave::Previous;

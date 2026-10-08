@@ -334,6 +334,14 @@ pub const LANGUAGES: &[Texts] = &[
     },
 ];
 
+impl Texts {
+    /// "Label: value", with French typography (non-breaking space before the colon).
+    pub fn labeled(&self, label: &str, value: &str) -> String {
+        let colon = if self.code == "fr" { "\u{a0}:" } else { ":" };
+        format!("{label}{colon} {value}")
+    }
+}
+
 /// Language for a stored code; `None` (or an unknown code) follows Windows.
 pub fn resolve(code: Option<&str>) -> &'static Texts {
     code.and_then(|code| LANGUAGES.iter().find(|t| t.code == code))
