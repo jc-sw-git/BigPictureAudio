@@ -15,12 +15,13 @@ use std::ffi::c_void;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NOTIFYICONDATAW,
@@ -49,6 +50,9 @@ const ID_LANGUAGE_AUTO: usize = 904;
 const ID_AUTOSTART: usize = 905;
 const ID_OPEN_LOG: usize = 906;
 const ID_EXIT: usize = 907;
+/// Greyed-out entries for a selected device that isn't connected.
+const ID_TARGET_MISSING: usize = 908;
+const ID_LEAVE_MISSING: usize = 909;
 const ID_TARGET_BASE: usize = 1000;
 const ID_LEAVE_BASE: usize = 2000;
 const ID_LANGUAGE_BASE: usize = 3000;
@@ -224,17 +228,24 @@ impl App {
 
     /// Appends the device list; a selected device that isn't connected is
     /// shown greyed out so the current choice stays visible.
-    unsafe fn append_devices(&self, menu: HMENU, id_base: usize, selected: Option<&str>) {
+    unsafe fn append_devices(&self, menu: HMENU, id_base: usize, missing_id: usize, selected: Option<&str>) {
         for (i, device) in self.menu_devices.iter().enumerate() {
             let checked = selected == Some(device.id.as_str());
             append(menu, MF_STRING | check(checked), id_base + i, &device.label);
         }
         if let Some(id) = selected.filter(|id| !self.menu_devices.iter().any(|d| d.id == *id)) {
-            append(menu, MF_STRING | MF_GRAYED | MF_CHECKED, 0, &label(id, self.texts));
+            append(
+                menu,
+                MF_STRING | MF_GRAYED | MF_CHECKED,
+                missing_id,
+                &label(id, self.texts),
+            );
         }
     }
 
-    fn show_menu(&mut self) {
+    /// Builds the tray menu. The caller shows it (see `show_menu`) so the app
+    /// state isn't borrowed while the menu is open.
+    fn build_menu(&mut self) -> Option<HMENU> {
         self.menu_devices = audio::outputs().unwrap_or_default();
         let t = self.texts;
         unsafe {
@@ -244,7 +255,7 @@ impl App {
                 CreatePopupMenu(),
                 CreatePopupMenu(),
             ) else {
-                return;
+                return None;
             };
 
             append(
@@ -272,7 +283,7 @@ impl App {
                 t.dont_switch,
             );
             append(enter, MF_SEPARATOR, 0, "");
-            self.append_devices(enter, ID_TARGET_BASE, target);
+            self.append_devices(enter, ID_TARGET_BASE, ID_TARGET_MISSING, target);
             append(menu, MF_POPUP, enter.0 as usize, t.enter_menu);
 
             let leave_device = match &self.config.leave {
@@ -295,7 +306,7 @@ impl App {
             let previous = self.config.leave == Leave::Previous;
             append(leave, MF_STRING | check(previous), ID_LEAVE_PREVIOUS, &previous_text);
             append(leave, MF_SEPARATOR, 0, "");
-            self.append_devices(leave, ID_LEAVE_BASE, leave_device);
+            self.append_devices(leave, ID_LEAVE_BASE, ID_LEAVE_MISSING, leave_device);
             append(leave, MF_SEPARATOR, 0, "");
             // Irrelevant when nothing is switched on leaving anyway.
             let enabled = if stay { MF_GRAYED } else { MF_ENABLED };
@@ -328,21 +339,39 @@ impl App {
             append(menu, MF_SEPARATOR, 0, "");
             append(menu, MF_STRING, ID_EXIT, t.exit);
 
-            let mut pt = POINT::default();
-            let _ = GetCursorPos(&mut pt);
-            // Required so the menu closes when clicking elsewhere.
-            let _ = SetForegroundWindow(self.hwnd);
-            let cmd = TrackPopupMenu(
-                menu,
-                TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
-                pt.x,
-                pt.y,
-                None,
-                self.hwnd,
-                None,
-            );
-            let _ = DestroyMenu(menu);
-            self.on_command(cmd.0 as usize);
+            Some(menu)
+        }
+    }
+
+    /// Updates check marks (and the enabled state of the "manual" option) in
+    /// an open menu after a setting changed.
+    fn refresh_menu(&self, menu: HMENU) {
+        let target = self.config.target.as_ref().map(|d| d.id.as_str());
+        let leave_device = match &self.config.leave {
+            Leave::Device(device) => Some(device.id.as_str()),
+            _ => None,
+        };
+        let known = |id: Option<&str>| id.is_some_and(|id| self.menu_devices.iter().any(|d| d.id == id));
+        let stay = self.config.leave == Leave::Stay;
+        let mut checks = vec![
+            (ID_TARGET_NONE, target.is_none()),
+            (ID_TARGET_MISSING, target.is_some() && !known(target)),
+            (ID_LEAVE_STAY, stay),
+            (ID_LEAVE_PREVIOUS, self.config.leave == Leave::Previous),
+            (ID_LEAVE_MISSING, leave_device.is_some() && !known(leave_device)),
+            (ID_LEAVE_SKIP_IF_MANUAL, self.config.skip_leave_if_manual),
+            (ID_AUTOSTART, autostart_enabled()),
+        ];
+        for (i, device) in self.menu_devices.iter().enumerate() {
+            checks.push((ID_TARGET_BASE + i, target == Some(device.id.as_str())));
+            checks.push((ID_LEAVE_BASE + i, leave_device == Some(device.id.as_str())));
+        }
+        unsafe {
+            for (id, checked) in checks {
+                CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | check(checked)).0);
+            }
+            let enabled = if stay { MF_GRAYED } else { MF_ENABLED };
+            let _ = EnableMenuItem(menu, ID_LEAVE_SKIP_IF_MANUAL as u32, MF_BYCOMMAND | enabled);
         }
     }
 
@@ -468,8 +497,99 @@ fn set_autostart(enable: bool) {
     }
 }
 
+thread_local! {
+    /// Item last highlighted in the open menu: (command ID, flags, menu handle).
+    static HIGHLIGHTED: std::cell::Cell<(usize, u32, isize)> = const { std::cell::Cell::new((0, 0, 0)) };
+    /// Root of the menu currently open.
+    static OPEN_MENU: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
+/// Settings that are applied without closing the menu, so several can be
+/// changed in one go. Language changes rebuild all texts and close it.
+fn keeps_menu_open(id: usize) -> bool {
+    matches!(
+        id,
+        ID_TARGET_NONE | ID_LEAVE_STAY | ID_LEAVE_PREVIOUS | ID_LEAVE_SKIP_IF_MANUAL | ID_AUTOSTART
+    ) || (ID_TARGET_BASE..ID_LANGUAGE_BASE).contains(&id)
+}
+
+/// Shows the tray menu at the cursor and runs the chosen command.
+fn show_menu() {
+    let Some((Some(menu), hwnd)) = with_app(|app| (app.build_menu(), app.hwnd)) else {
+        return;
+    };
+    unsafe {
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Required so the menu closes when clicking elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+        OPEN_MENU.set(menu.0 as isize);
+        let hook = SetWindowsHookExW(WH_MSGFILTER, Some(menu_filter), None, GetCurrentThreadId());
+        let cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, None, hwnd, None);
+        if let Ok(hook) = hook {
+            let _ = UnhookWindowsHookEx(hook);
+        }
+        OPEN_MENU.set(0);
+        let _ = DestroyMenu(menu);
+        with_app(|app| app.on_command(cmd.0 as usize));
+    }
+}
+
+/// Runs while the menu is open. Clicking (or pressing Enter on) a setting
+/// applies it, updates the check marks and swallows the click, so the menu
+/// stays open; everything else behaves normally.
+unsafe extern "system" fn menu_filter(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == MSGF_MENU as i32 {
+        let msg = &*(lparam.0 as *const MSG);
+        let clicked = msg.message == WM_LBUTTONUP;
+        let enter = msg.message == WM_KEYDOWN && msg.wParam.0 == 0x0D; // VK_RETURN
+        if clicked || enter {
+            let (id, flags, menu) = HIGHLIGHTED.get();
+            let selectable = flags & (MF_POPUP.0 | MF_GRAYED.0 | MF_DISABLED.0 | MF_SEPARATOR.0) == 0;
+            let menu = HMENU(menu as *mut c_void);
+            // A mouse click must actually be on the highlighted item.
+            let on_item = enter || {
+                let mut pt = POINT::default();
+                let _ = GetCursorPos(&mut pt);
+                let pos = MenuItemFromPoint(None, menu, pt);
+                pos >= 0 && GetMenuItemID(menu, pos) as usize == id
+            };
+            if selectable && on_item && keeps_menu_open(id) {
+                let root = HMENU(OPEN_MENU.get() as *mut c_void);
+                with_app(|app| {
+                    app.on_command(id);
+                    app.refresh_menu(root);
+                });
+                repaint_menus();
+                return LRESULT(1);
+            }
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// Redraws the open menu windows so changed check marks show up immediately.
+fn repaint_menus() {
+    unsafe extern "system" fn repaint(hwnd: HWND, _: LPARAM) -> windows::core::BOOL {
+        let mut class = [0u16; 16];
+        let len = GetClassNameW(hwnd, &mut class);
+        if String::from_utf16_lossy(&class[..len.max(0) as usize]) == "#32768" {
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+        true.into()
+    }
+    unsafe {
+        let _ = EnumThreadWindows(GetCurrentThreadId(), Some(repaint), LPARAM(0));
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_MENUSELECT => {
+            let flags = ((wparam.0 >> 16) & 0xffff) as u32;
+            HIGHLIGHTED.set(((wparam.0 & 0xffff), flags, lparam.0));
+            LRESULT(0)
+        }
         WM_TIMER => {
             with_app(App::on_tick);
             LRESULT(0)
@@ -477,7 +597,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_TRAY => {
             let event = (lparam.0 & 0xffff) as u32;
             if event == WM_RBUTTONUP || event == WM_LBUTTONUP {
-                with_app(App::show_menu);
+                show_menu();
             }
             LRESULT(0)
         }
