@@ -12,10 +12,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          # Everything between "## <tag>" and the next "## " heading.
+          awk -v tag="## ${GITHUB_REF_NAME}" '
+            $0 == tag { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No section '## ${GITHUB_REF_NAME}' in CHANGELOG.md"
+            exit 1
+          fi
+          cat release-notes.md
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - uses: softprops/action-gh-release@v2
         with:
           files: target/release/big-picture-audio.exe
-          generate_release_notes: true
+          body_path: release-notes.md

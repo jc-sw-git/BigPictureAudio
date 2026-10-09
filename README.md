@@ -89,7 +89,8 @@ cargo test -- --ignored --nocapture     # smoke test against the real system
 ```
 
 Pushing a `v*` tag builds the executable via GitHub Actions and attaches it to
-a new release.
+a new release. The release notes are taken from the version's section in
+[CHANGELOG.md](CHANGELOG.md), so add it before tagging.
 
 ## License
 
