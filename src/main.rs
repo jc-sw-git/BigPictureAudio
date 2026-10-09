@@ -496,8 +496,42 @@ fn copy_wide(dst: &mut [u16], text: &str) {
     dst[wide.len()] = 0;
 }
 
+/// The command line Windows runs at login, if an autostart entry exists.
+fn autostart_command() -> Option<String> {
+    let mut buf = [0u16; 1024];
+    let mut size = (buf.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            RUN_VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut c_void),
+            Some(&mut size),
+        )
+    };
+    if status.is_err() {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+/// `true` if the autostart command runs `exe` (quotes and case don't matter).
+fn command_runs(command: &str, exe: &std::path::Path) -> bool {
+    let command = command.trim().trim_matches('"');
+    command.eq_ignore_ascii_case(&exe.to_string_lossy())
+}
+
+/// `true` only if the autostart entry starts *this* executable. An entry left
+/// over from a renamed or moved copy doesn't count, so the menu shows it as
+/// off and enabling it writes the current path.
 fn autostart_enabled() -> bool {
-    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ, None, None, None).is_ok() }
+    match (autostart_command(), std::env::current_exe()) {
+        (Some(command), Ok(exe)) => command_runs(&command, &exe),
+        _ => false,
+    }
 }
 
 fn set_autostart(enable: bool) {
@@ -721,6 +755,27 @@ fn main() -> windows::core::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod autostart_tests {
+    use super::command_runs;
+    use std::path::Path;
+
+    #[test]
+    fn matches_only_the_running_executable() {
+        let exe = Path::new(r"C:\Users\me\Downloads\big-picture-audio (1).exe");
+        assert!(command_runs(
+            r#""C:\Users\me\Downloads\big-picture-audio (1).exe""#,
+            exe
+        ));
+        assert!(command_runs(r"c:\users\me\downloads\BIG-PICTURE-AUDIO (1).EXE", exe));
+        assert!(!command_runs(r#""C:\Users\me\Downloads\big-picture-audio.exe""#, exe));
+        assert!(!command_runs(
+            r#""C:\Users\me\dev\release\big-picture-audio (1).exe""#,
+            exe
+        ));
+    }
 }
 
 #[cfg(test)]
